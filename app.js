@@ -121,14 +121,54 @@
   const workoutsEmpty = document.getElementById("workouts-empty");
   const workoutsLoading = document.getElementById("workouts-loading");
 
+  // The workout list is driven by recent session history, not the raw
+  // /workouts catalog — that way it naturally includes built-in courses (which
+  // have no template endpoint of their own) and excludes anything never
+  // actually performed (nothing to show progress on anyway). Custom workouts
+  // that match a session by name still get live-fetched via /workouts/{code}
+  // when opened, so their plan reflects any edits since that last run.
+  const WORKOUT_HISTORY_DAYS = 90;
+
   async function enterWorkoutsView() {
     showView("workouts");
     workoutsList.hidden = true;
     workoutsEmpty.hidden = true;
     workoutsLoading.hidden = false;
     try {
-      const data = await api("/workouts");
-      state.workouts = data.workouts || [];
+      const from = new Date();
+      from.setDate(from.getDate() - WORKOUT_HISTORY_DAYS);
+      const fromStr = from.toISOString().slice(0, 10);
+
+      const [customData, sessionsData] = await Promise.all([
+        api("/workouts"),
+        api(`/sessions?from=${fromStr}&includeExercises=true`),
+      ]);
+
+      const customByName = new Map();
+      for (const w of customData.workouts || []) customByName.set(w.name, w);
+
+      const tiles = new Map(); // key -> tile; sessions are newest-first, so first-seen wins
+      for (const s of sessionsData.sessions || []) {
+        if (s.detailType !== "template" && s.detailType !== "course") continue;
+        const key = s.detailType + ":" + s.name;
+        if (tiles.has(key)) continue;
+
+        const matchedCustom = s.detailType === "template" ? customByName.get(s.name) : null;
+        const exercises = (s.exercises || []).filter((e) => e.groupId != null);
+
+        tiles.set(key, {
+          name: s.name,
+          badge: s.detailType === "template" ? "Custom" : "Built-in",
+          lastPerformedDate: s.date,
+          cover: matchedCustom ? matchedCustom.cover : null,
+          durationMinute: matchedCustom ? matchedCustom.durationMinute : Math.round((s.seconds || 0) / 60),
+          estimatedCalorie: matchedCustom ? matchedCustom.estimatedCalorie : s.calories,
+          exerciseCount: matchedCustom ? matchedCustom.actionNum : exercises.length,
+          source: matchedCustom ? { type: "custom", code: matchedCustom.code } : { type: "snapshot", exercises },
+        });
+      }
+
+      state.workouts = [...tiles.values()].sort((a, b) => (a.lastPerformedDate < b.lastPerformedDate ? 1 : -1));
       renderWorkouts();
     } catch (e) {
       toast("Failed to load workouts: " + e.message, true);
@@ -149,17 +189,22 @@
     for (const w of state.workouts) {
       const card = document.createElement("div");
       card.className = "workout-card";
+      const d = daysSince(w.lastPerformedDate);
+      const lastText = d === 0 ? "Today" : d === 1 ? "1 day ago" : `${d} days ago`;
       card.innerHTML = `
         ${w.cover ? `<img class="workout-cover" src="${w.cover}" alt="" />` : `<div class="workout-cover"></div>`}
         <div class="workout-info">
-          <p class="workout-title">${escapeHtml(w.name || "Untitled")}</p>
+          <div class="workout-title-row">
+            <p class="workout-title">${escapeHtml(w.name || "Untitled")}</p>
+            <span class="workout-badge">${w.badge}</span>
+          </div>
           <p class="workout-meta">${w.durationMinute ? w.durationMinute + " min" : ""}${
-        w.estimatedCalorie ? " · " + w.estimatedCalorie + " cal" : ""
-      }${w.actionNum ? " · " + w.actionNum + " exercises" : ""}</p>
+        w.estimatedCalorie ? " · " + Math.round(w.estimatedCalorie) + " cal" : ""
+      }${w.exerciseCount ? " · " + w.exerciseCount + " exercises" : ""} · ${lastText}</p>
         </div>
         <div class="workout-chevron">›</div>
       `;
-      card.addEventListener("click", () => loadWorkout(w.code, w.name));
+      card.addEventListener("click", () => loadWorkout(w));
       workoutsList.appendChild(card);
     }
   }
@@ -188,8 +233,8 @@
     return out;
   }
 
-  async function loadWorkout(code, name) {
-    state.workoutName = name || "Workout";
+  async function loadWorkout(tile) {
+    state.workoutName = tile.name || "Workout";
     state.exercises = [];
     state.currentIndex = 0;
     showView("exercise");
@@ -197,8 +242,29 @@
     setExLoading(true);
 
     try {
-      const plan = await api(`/workouts/${code}`);
-      const flat = flattenPlan(plan.exercises);
+      let flat;
+      let unit = state.unit;
+
+      if (tile.source.type === "custom") {
+        const plan = await api(`/workouts/${tile.source.code}`);
+        unit = plan.unit || state.unit;
+        flat = flattenPlan(plan.exercises).map((item) => ({
+          groupId: item.groupId,
+          kind: item.kind || null,
+          planSets: item.sets || [],
+        }));
+      } else {
+        // Built-in course (or a renamed/deleted custom template): no template
+        // endpoint exists for these, so the plan is reconstructed from the
+        // most recent session's targetReps per set.
+        flat = tile.source.exercises.map((e) => ({
+          groupId: e.groupId,
+          kind: null,
+          name: e.name || null,
+          planSets: groupSetLogBySetIndex(e.setLog, { repsField: "targetReps", includeWeight: false }) || [],
+        }));
+      }
+
       if (flat.length === 0) {
         toast("This workout has no exercises.", true);
         setExLoading(false);
@@ -207,12 +273,12 @@
 
       state.exercises = flat.map((item) => ({
         groupId: item.groupId,
-        kind: item.kind || null,
-        planSets: item.sets || [],
-        name: `#${item.groupId}`,
+        kind: item.kind,
+        planSets: item.planSets,
+        name: item.name || `#${item.groupId}`,
         muscle: "",
         history: null,
-        historyUnit: plan.unit || state.unit,
+        historyUnit: unit,
         prevSets: null,
         loadError: null,
       }));
@@ -233,24 +299,34 @@
   async function fetchExerciseDetail(index) {
     const ex = state.exercises[index];
     if (!ex) return;
-    try {
-      const [catalog, history] = await Promise.all([
-        detailCache.has(ex.groupId)
-          ? Promise.resolve(detailCache.get(ex.groupId))
-          : api(`/exercises/${ex.groupId}`).then((c) => {
-              detailCache.set(ex.groupId, c);
-              return c;
-            }),
-        api(`/exercises/${ex.groupId}/history?limit=25`),
-      ]);
-      ex.name = catalog.name || ex.name;
-      ex.muscle = catalog.muscle || "";
-      ex.history = history.history || [];
-      ex.historyUnit = history.unit || ex.historyUnit;
-      ex.loadError = null;
-    } catch (e) {
-      ex.loadError = e.message;
+
+    // Fetched independently: a handful of built-in-course-only movements
+    // (mobility drills mostly) aren't in the shared /exercises catalog, but
+    // their /history still works — a catalog 404 shouldn't hide history data
+    // that loaded fine. Only missing history blocks the whole stats display.
+    const [catalogResult, historyResult] = await Promise.allSettled([
+      detailCache.has(ex.groupId)
+        ? Promise.resolve(detailCache.get(ex.groupId))
+        : api(`/exercises/${ex.groupId}`).then((c) => {
+            detailCache.set(ex.groupId, c);
+            return c;
+          }),
+      api(`/exercises/${ex.groupId}/history?limit=25`),
+    ]);
+
+    if (catalogResult.status === "fulfilled") {
+      ex.name = catalogResult.value.name || ex.name;
+      ex.muscle = catalogResult.value.muscle || "";
     }
+
+    if (historyResult.status === "fulfilled") {
+      ex.history = historyResult.value.history || [];
+      ex.historyUnit = historyResult.value.unit || ex.historyUnit;
+      ex.loadError = null;
+    } else {
+      ex.loadError = historyResult.reason && historyResult.reason.message;
+    }
+
     if (index === state.currentIndex) render();
     else renderDotsAndTitleOnly();
   }
@@ -262,7 +338,12 @@
   // total, not one per exercise.
   const sessionsByDateCache = new Map(); // dayStr -> sessions[]
 
-  function groupSetLogBySetIndex(setLog) {
+  // repsField lets the same grouping serve two purposes: default ("reps") pulls
+  // what was actually performed (previous-session actuals); {repsField:
+  // "targetReps", includeWeight: false} pulls the machine's prescribed reps
+  // instead — used to build a pseudo-plan for built-in courses, which have no
+  // separate template endpoint the way custom workouts do.
+  function groupSetLogBySetIndex(setLog, { repsField = "reps", includeWeight = true } = {}) {
     if (!Array.isArray(setLog) || setLog.length === 0) return null;
     const bySetIndex = new Map();
     for (const entry of setLog) {
@@ -273,12 +354,12 @@
       .sort((a, b) => a - b)
       .map((idx) => {
         const entries = bySetIndex.get(idx);
-        const weights = [...new Set(entries.map((e) => e.weight).filter((w) => w != null))];
-        return {
-          reps: entries[0].reps,
-          seconds: entries[0].seconds,
-          weight: weights.length === 0 ? null : weights.length === 1 ? weights[0] : weights.join("/"),
-        };
+        let weight = null;
+        if (includeWeight) {
+          const weights = [...new Set(entries.map((e) => e.weight).filter((w) => w != null))];
+          weight = weights.length === 0 ? null : weights.length === 1 ? weights[0] : weights.join("/");
+        }
+        return { reps: entries[0][repsField], seconds: entries[0].seconds, weight };
       });
   }
 

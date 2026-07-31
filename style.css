@@ -177,7 +177,32 @@ button {
   flex-shrink: 0;
 }
 .workout-info { flex: 1; min-width: 0; }
-.workout-title { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+.workout-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.workout-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workout-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
 .workout-meta { font-size: 13px; color: var(--text-dim); }
 .workout-chevron { color: var(--text-dim); font-size: 22px; }
 

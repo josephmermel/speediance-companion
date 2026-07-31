@@ -1,0 +1,9 @@
+{
+  "name": "GM Coach",
+  "short_name": "GM Coach",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": []
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0e14" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GM Coach" />
+<link rel="manifest" href="manifest.json" />
+<title>GM Coach</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%2300d68f'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' font-family='sans-serif' font-weight='bold' fill='%230b0e14'%3EG%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- TOKEN SETUP -->
+<section id="view-token" class="view">
+  <div class="center-card">
+    <h1 class="brand">GM Coach</h1>
+    <p class="sub">Your Speediance Gym Master companion</p>
+    <label class="field-label" for="token-input">API Token</label>
+    <input id="token-input" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="spapi_..." />
+    <button id="btn-save-token" class="btn btn-primary btn-block">Connect</button>
+    <p id="token-error" class="error-text" hidden></p>
+    <p class="hint">Stored only in this browser. Never sent anywhere but the GM Manager API.</p>
+  </div>
+</section>
+
+<!-- WORKOUT LIST -->
+<section id="view-workouts" class="view">
+  <header class="topbar">
+    <h1 class="page-title">Workouts</h1>
+    <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙</button>
+  </header>
+  <div id="workouts-list" class="workouts-list"></div>
+  <div id="workouts-empty" class="empty-state" hidden>
+    <p>No custom workouts found on this account yet.</p>
+  </div>
+  <div id="workouts-loading" class="loading-state">
+    <div class="spinner"></div>
+    <p>Loading workouts…</p>
+  </div>
+</section>
+
+<!-- EXERCISE VIEW -->
+<section id="view-exercise" class="view">
+  <header class="topbar">
+    <button id="btn-home" class="icon-btn" aria-label="Back to workouts">‹</button>
+    <div class="topbar-mid">
+      <div id="workout-name" class="workout-name"></div>
+      <div id="progress-track" class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+    </div>
+    <button id="btn-refresh" class="icon-btn" aria-label="Refresh">⟳</button>
+  </header>
+
+  <div id="exercise-stage" class="exercise-stage">
+    <div id="exercise-card" class="exercise-card">
+
+      <div class="ex-index" id="ex-index">1 / 1</div>
+      <h2 id="ex-name" class="ex-name">—</h2>
+      <div id="ex-muscle" class="ex-muscle"></div>
+
+      <div id="ex-plan" class="plan-row"></div>
+
+      <div class="stats-grid">
+        <div class="stat-block">
+          <div class="stat-label">Last performed</div>
+          <div id="stat-lastperformed" class="stat-big">—</div>
+          <div id="stat-lastperformed-date" class="stat-sub"></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-label">Last 5 grades</div>
+          <div id="stat-grades" class="chip-row"></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-label">Max weight</div>
+          <div id="stat-weights" class="chart-area"></div>
+        </div>
+
+        <div class="stat-block">
+          <div class="stat-label">Est. 1RM</div>
+          <div id="stat-1rm" class="chart-area"></div>
+        </div>
+      </div>
+
+      <div id="ex-loading" class="loading-state small" hidden>
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="bottom-nav">
+    <button id="btn-prev" class="btn btn-secondary">‹ Prev</button>
+    <div id="dots" class="dots"></div>
+    <button id="btn-next" class="btn btn-secondary">Next ›</button>
+  </footer>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

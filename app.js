@@ -24,6 +24,9 @@
     workoutName: "",
     exercises: [], // [{groupId, name, muscle, planSets, kind, history, statsReady}]
     currentIndex: 0,
+    // Whether each chart block shows numeric value labels on its bars. A UI
+    // preference, not per-exercise data, so it persists as you navigate.
+    chartExpanded: { weights: false, oneRM: false, volume: false },
   };
 
   // ---------------- API helpers ----------------
@@ -432,6 +435,19 @@
     return null;
   }
 
+  // Compares the planned weight for a set against what was actually lifted
+  // last time — the badge answers "should this set feel heavier, lighter, or
+  // the same as last time?" Skipped for L/R-joined weights (e.g. "8.5/10")
+  // since a single delta wouldn't be meaningful.
+  function formatWeightDelta(planned, prev, unit) {
+    if (!planned || !prev) return null;
+    if (typeof planned.weight !== "number" || typeof prev.weight !== "number") return null;
+    const delta = Math.round((planned.weight - prev.weight) * 100) / 100;
+    if (delta > 0) return { cls: "delta-up", label: `▲ +${delta}${unit}` };
+    if (delta < 0) return { cls: "delta-down", label: `▼ ${delta}${unit}` };
+    return { cls: "delta-flat", label: "→ steady" };
+  }
+
   function daysSince(dayStr) {
     const [y, m, d] = dayStr.split("-").map(Number);
     const then = new Date(y, m - 1, d);
@@ -451,6 +467,15 @@
     return `${m}/${d}`;
   }
 
+  function syncChartToggle(key) {
+    const el = document.querySelector(`.stat-block-chart[data-chart="${key}"]`);
+    if (!el) return;
+    const expanded = state.chartExpanded[key];
+    el.classList.toggle("expanded", expanded);
+    const hint = el.querySelector(".expand-hint");
+    if (hint) hint.textContent = expanded ? "⌃" : "⌄";
+  }
+
   function chipRow(containerId, items, renderFn) {
     const el = document.getElementById(containerId);
     if (!items || items.length === 0) {
@@ -462,7 +487,9 @@
 
   // Renders a "latest value + trend delta" callout above a small bar chart
   // of up to the last 5 data points (oldest → newest, left to right).
-  function renderTrendStat(containerId, entriesNewestFirst, valueKey, unit) {
+  // `expanded` adds a row of numeric labels above the bars, toggled by
+  // tapping the stat block (see the click handler wired in render()).
+  function renderTrendStat(containerId, entriesNewestFirst, valueKey, unit, expanded) {
     const el = document.getElementById(containerId);
     const points = entriesNewestFirst.filter((h) => h[valueKey] != null).slice(0, 5);
 
@@ -496,12 +523,16 @@
       .join("");
 
     const dates = chrono.map((h) => `<div class="bar-date">${formatDayStrShort(h.dayStr)}</div>`).join("");
+    const valuesRow = expanded
+      ? `<div class="bar-values">${chrono.map((h) => `<div class="bar-value">${h[valueKey]}</div>`).join("")}</div>`
+      : "";
 
     el.innerHTML = `
       <div class="stat-latest-row">
         <span class="stat-latest-value">${latest}<span class="stat-latest-unit">${unit}</span></span>
         ${deltaHtml}
       </div>
+      ${valuesRow}
       <div class="bar-chart">${bars}</div>
       <div class="bar-dates">${dates}</div>
     `;
@@ -532,13 +563,16 @@
     if (ex.planSets && ex.planSets.length) {
       planEl.innerHTML = ex.planSets
         .map((s, idx) => {
-          const plannedLabel = formatSetLabel(s, unit) || "—";
+          // What you actually did last time is the headline; the planned
+          // target only shows up as a "how much heavier/lighter" delta badge.
+          // With no history yet, fall back to showing the plan itself.
           const prevSet = ex.prevSets && ex.prevSets[idx];
-          const prevLabel = prevSet ? formatSetLabel(prevSet, unit) : null;
-          const showPrev = prevLabel && prevLabel !== plannedLabel;
-          return `<span class="plan-set">Set ${idx + 1}: ${escapeHtml(plannedLabel)}${
-            showPrev ? ` <span class="plan-prev">(${escapeHtml(prevLabel)})</span>` : ""
-          }</span>`;
+          const label = (prevSet && formatSetLabel(prevSet, unit)) || formatSetLabel(s, unit) || "—";
+          const delta = prevSet ? formatWeightDelta(s, prevSet, unit) : null;
+          return `<div class="plan-set-group${delta ? " has-delta" : ""}">
+            <span class="plan-set">Set ${idx + 1}: ${escapeHtml(label)}</span>
+            ${delta ? `<span class="delta-badge ${delta.cls}">${delta.label}</span>` : ""}
+          </div>`;
         })
         .join("");
     } else {
@@ -549,8 +583,12 @@
       document.getElementById("stat-lastperformed").textContent = "—";
       document.getElementById("stat-lastperformed-date").textContent = "Couldn't load: " + ex.loadError;
       chipRow("stat-grades", null);
-      renderTrendStat("stat-weights", [], "maxWeight", unit);
-      renderTrendStat("stat-1rm", [], "oneRepMax", unit);
+      renderTrendStat("stat-weights", [], "maxWeight", unit, state.chartExpanded.weights);
+      renderTrendStat("stat-1rm", [], "oneRepMax", unit, state.chartExpanded.oneRM);
+      renderTrendStat("stat-volume", [], "totalCapacity", unit, state.chartExpanded.volume);
+      syncChartToggle("weights");
+      syncChartToggle("oneRM");
+      syncChartToggle("volume");
       return;
     }
 
@@ -573,8 +611,12 @@
       return `<span class="chip grade-chip grade-${letter}">${letter}</span>`;
     });
 
-    renderTrendStat("stat-weights", history, "maxWeight", unit);
-    renderTrendStat("stat-1rm", history, "oneRepMax", unit);
+    renderTrendStat("stat-weights", history, "maxWeight", unit, state.chartExpanded.weights);
+    renderTrendStat("stat-1rm", history, "oneRepMax", unit, state.chartExpanded.oneRM);
+    renderTrendStat("stat-volume", history, "totalCapacity", unit, state.chartExpanded.volume);
+    syncChartToggle("weights");
+    syncChartToggle("oneRM");
+    syncChartToggle("volume");
   }
 
   function renderDotsAndTitleOnly() {
@@ -606,6 +648,14 @@
 
   document.getElementById("btn-prev").addEventListener("click", () => goTo(state.currentIndex - 1));
   document.getElementById("btn-next").addEventListener("click", () => goTo(state.currentIndex + 1));
+
+  document.querySelectorAll(".stat-block-chart").forEach((el) => {
+    el.addEventListener("click", () => {
+      const key = el.dataset.chart;
+      state.chartExpanded[key] = !state.chartExpanded[key];
+      render();
+    });
+  });
   document.getElementById("btn-refresh").addEventListener("click", refreshCurrent);
 
   // Swipe handling (Pointer Events cover touch, mouse drag, and pen in one API)

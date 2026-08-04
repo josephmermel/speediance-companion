@@ -53,7 +53,7 @@
       <div id="workout-name" class="workout-name"></div>
       <div id="progress-track" class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
     </div>
-    <button id="btn-refresh" class="icon-btn" aria-label="Refresh">⟳</button>
+    <button id="btn-refresh" class="icon-btn icon-btn-lg" aria-label="Refresh">⟳</button>
   </header>
 
   <div id="exercise-stage" class="exercise-stage">
@@ -77,14 +77,19 @@
           <div id="stat-grades" class="chip-row"></div>
         </div>
 
-        <div class="stat-block">
-          <div class="stat-label">Max weight</div>
+        <div class="stat-block stat-block-chart" data-chart="weights">
+          <div class="stat-label">Max weight<span class="expand-hint">⌄</span></div>
           <div id="stat-weights" class="chart-area"></div>
         </div>
 
-        <div class="stat-block">
-          <div class="stat-label">Est. 1RM</div>
+        <div class="stat-block stat-block-chart" data-chart="oneRM">
+          <div class="stat-label">Est. 1RM<span class="expand-hint">⌄</span></div>
           <div id="stat-1rm" class="chart-area"></div>
+        </div>
+
+        <div class="stat-block stat-block-chart stat-block-wide" data-chart="volume">
+          <div class="stat-label">Total volume<span class="expand-hint">⌄</span></div>
+          <div id="stat-volume" class="chart-area"></div>
         </div>
       </div>
 

@@ -148,6 +148,11 @@ button {
   flex-shrink: 0;
 }
 .icon-btn:active { background: var(--bg-elev-2); }
+.icon-btn-lg {
+  width: 54px;
+  height: 54px;
+  font-size: 28px;
+}
 
 /* ---------- Workout list ---------- */
 #view-workouts { position: relative; }
@@ -303,18 +308,37 @@ button {
   gap: 8px;
   margin-bottom: 16px;
 }
+.plan-set-group {
+  display: flex;
+  align-items: stretch;
+  border-radius: 9px;
+  overflow: hidden;
+}
 .plan-set {
   background: var(--accent-dim);
   color: var(--accent);
-  border-radius: 9px;
   padding: 7px 12px;
   font-size: 14px;
   font-weight: 700;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
 }
-.plan-prev {
-  color: var(--text-dim);
-  font-weight: 600;
+.plan-set-group.has-delta .plan-set {
+  border-radius: 9px 0 0 9px;
 }
+.delta-badge {
+  display: flex;
+  align-items: center;
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 0 9px 9px 0;
+  white-space: nowrap;
+}
+.delta-up { background: color-mix(in srgb, var(--grade-a) 25%, var(--bg-elev-2)); color: var(--grade-a); }
+.delta-down { background: color-mix(in srgb, var(--grade-c) 25%, var(--bg-elev-2)); color: var(--grade-c); }
+.delta-flat { background: var(--bg-elev-2); color: var(--text-dim); }
 
 .stats-grid {
   display: grid;
@@ -327,13 +351,33 @@ button {
   padding: 12px 14px;
   min-height: 88px;
 }
+.stat-block-wide { grid-column: 1 / -1; }
+.stat-block-chart {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.stat-block-chart:active { background: var(--bg-elev); }
+.stat-block-chart.expanded {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
+}
 .stat-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-dim);
   margin-bottom: 8px;
+}
+.expand-hint {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-transform: none;
+  letter-spacing: 0;
 }
 .stat-big { font-size: 26px; font-weight: 700; }
 .stat-sub { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
@@ -428,6 +472,23 @@ button {
   white-space: nowrap;
 }
 
+.bar-values {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+.bar-value {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .bottom-nav {
   flex-shrink: 0;
   display: flex;
@@ -470,20 +531,27 @@ button {
   .exercise-card { padding: 14px 16px; }
   .ex-name { font-size: 22px; margin: 2px 0; }
   .ex-muscle { font-size: 13px; margin-bottom: 10px; }
-  .plan-row { margin-bottom: 12px; }
+  .plan-row { gap: 6px; margin-bottom: 10px; }
   .plan-set { padding: 5px 10px; font-size: 13px; }
-  .stats-grid { gap: 8px; }
-  .stat-block { min-height: 0; padding: 9px 11px; }
-  .stat-label { font-size: 11px; margin-bottom: 5px; }
+  .delta-badge { padding: 5px 7px; font-size: 11px; }
+  .stats-grid { gap: 7px; }
+  .stat-block { min-height: 0; padding: 8px 10px; }
+  .stat-label { font-size: 11px; margin-bottom: 4px; }
   .stat-big { font-size: 18px; }
-  .stat-latest-value { font-size: 20px; }
-  .bar-chart { height: 26px; }
+  .stat-latest-row { margin-bottom: 3px; }
+  .stat-latest-value { font-size: 19px; }
+  .bar-chart { height: 24px; }
   .bar-dates { margin-top: 3px; }
   .bar-date { font-size: 9px; }
+  .bar-values { margin-bottom: 2px; }
+  .bar-value { font-size: 9px; }
 }
 
 @media (max-height: 620px) {
   .ex-name { font-size: 19px; }
   .ex-muscle { display: none; }
   .bar-chart { height: 20px; }
+  .stat-block { padding: 7px 9px; }
+  .stat-latest-value { font-size: 17px; }
+  .bar-values { display: none; }
 }

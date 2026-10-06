@@ -84,6 +84,7 @@
     token: document.getElementById("view-token"),
     workouts: document.getElementById("view-workouts"),
     exercise: document.getElementById("view-exercise"),
+    progress: document.getElementById("view-progress"),
   };
 
   function showView(name) {
@@ -734,6 +735,9 @@
       showView("token");
     }
   }
+
+  // Shared with dashboard.js, which renders the Progress view.
+  window.GMCoach = { api, showView, toast, escapeHtml, isAuthError, requireNewToken, enterWorkoutsView };
 
   boot();
 })();

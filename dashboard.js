@@ -1,0 +1,501 @@
+(() => {
+  "use strict";
+
+  // First "A" day of the current A/B split. Everything before it belongs to the
+  // previous program and is left out. Every two workout days, counted back from
+  // the most recent one, form one complete A+B program (one data point).
+  const SPLIT_START = "2026-09-16";
+  const WINDOW_KEY = "gmcoach_momentum_window";
+  const RECENT_WINDOW = 4; // programs used by the "Last 4" momentum view
+  const FETCH_CONCURRENCY = 4;
+
+  const { api, showView, toast, escapeHtml, isAuthError, requireNewToken, enterWorkoutsView } = window.GMCoach;
+
+  const dash = {
+    programs: [], // [{days: [older, newer]}], oldest first
+    muscles: [], // [{name, exercises: [...], series: [vol|null per program]}]
+    unit: "kg",
+    window: readWindowPref(),
+    openExercises: new Set(), // groupIds with their full chart expanded
+    showValues: new Set(), // chart keys showing per-point value labels
+  };
+
+  const body = document.getElementById("progress-body");
+
+  // ---------------- Preferences ----------------
+
+  function readWindowPref() {
+    try {
+      return localStorage.getItem(WINDOW_KEY) === "recent" ? "recent" : "all";
+    } catch (_) {
+      return "all";
+    }
+  }
+
+  function writeWindowPref(v) {
+    try {
+      localStorage.setItem(WINDOW_KEY, v);
+    } catch (_) {
+      /* storage unavailable: preference just won't persist */
+    }
+  }
+
+  // ---------------- Data ----------------
+
+  // GM Manager occasionally drops a connection, so dashboard reads (which fan
+  // out to ~30 requests) retry once and run a few at a time.
+  async function apiRetry(path) {
+    try {
+      return await api(path);
+    } catch (e) {
+      if (e.status !== 0) throw e;
+      return api(path);
+    }
+  }
+
+  async function mapLimit(items, limit, fn) {
+    const out = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return out;
+  }
+
+  const exerciseInfoCache = new Map(); // groupId -> {muscle}
+
+  async function loadDashboardData() {
+    const sessionsData = await apiRetry(`/sessions?from=${SPLIT_START}&includeExercises=true`);
+    dash.unit = sessionsData.unit || "kg";
+    const sessions = (sessionsData.sessions || []).filter(
+      (s) => s.detailType === "template" || s.detailType === "course"
+    );
+
+    // Two sessions on one date are one workout day.
+    const daysNewestFirst = [...new Set(sessions.map((s) => s.date))].sort().reverse();
+    const programs = [];
+    for (let i = 0; i + 1 < daysNewestFirst.length; i += 2) {
+      programs.push({ days: [daysNewestFirst[i + 1], daysNewestFirst[i]] });
+    }
+    // An odd day left over at the start is half a program; it's dropped
+    // rather than plotted as a fake dip for the muscles it didn't train.
+    programs.reverse();
+    const programOfDay = new Map();
+    programs.forEach((p, idx) => p.days.forEach((d) => programOfDay.set(d, idx)));
+
+    // Exercises in first-seen order (oldest session first) so muscle groups
+    // and their exercises appear in the order the program runs them.
+    const exercises = new Map();
+    for (const s of [...sessions].reverse()) {
+      if (!programOfDay.has(s.date)) continue;
+      for (const e of s.exercises || []) {
+        if (e.groupId == null) continue;
+        if (!exercises.has(e.groupId)) {
+          exercises.set(e.groupId, { groupId: e.groupId, name: e.name || `#${e.groupId}`, days: new Set() });
+        }
+        exercises.get(e.groupId).days.add(s.date);
+      }
+    }
+
+    const list = [...exercises.values()];
+    await mapLimit(list, FETCH_CONCURRENCY, async (ex) => {
+      const [info, hist] = await Promise.all([
+        exerciseInfoCache.has(ex.groupId)
+          ? exerciseInfoCache.get(ex.groupId)
+          : apiRetry(`/exercises/${ex.groupId}`).then((c) => {
+              const v = { muscle: c.muscle || (c.muscles && c.muscles[0]) || "Other" };
+              exerciseInfoCache.set(ex.groupId, v);
+              return v;
+            }),
+        apiRetry(`/exercises/${ex.groupId}/history?limit=200`),
+      ]);
+      ex.muscle = info.muscle;
+      // totalCapacity is Speediance's own per-day volume for the movement,
+      // which already accounts for drop-offs within a set and partial reps.
+      ex.series = programs.map(() => null);
+      for (const h of hist.history || []) {
+        if (!ex.days.has(h.dayStr) || h.totalCapacity == null) continue;
+        const idx = programOfDay.get(h.dayStr);
+        ex.series[idx] = (ex.series[idx] || 0) + h.totalCapacity;
+      }
+    });
+
+    const muscles = new Map();
+    for (const ex of list) {
+      if (!ex.series.some((v) => v != null)) continue;
+      if (!muscles.has(ex.muscle)) muscles.set(ex.muscle, { name: ex.muscle, exercises: [] });
+      muscles.get(ex.muscle).exercises.push(ex);
+    }
+    for (const m of muscles.values()) {
+      m.series = programs.map((_, i) => {
+        const vals = m.exercises.map((ex) => ex.series[i]).filter((v) => v != null);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+      });
+    }
+
+    dash.programs = programs;
+    dash.muscles = [...muscles.values()];
+  }
+
+  // ---------------- Metrics ----------------
+
+  // Growth rate per program from a least-squares fit of log(volume) against
+  // program index. Using the fit instead of first-vs-last keeps one off day
+  // from swinging the number, and working in log space makes it a percentage,
+  // so a small muscle and a big one are compared on the same footing.
+  function growth(series) {
+    const start = dash.window === "recent" ? Math.max(0, series.length - RECENT_WINDOW) : 0;
+    const pts = [];
+    for (let i = start; i < series.length; i++) if (series[i] > 0) pts.push([i, Math.log(series[i])]);
+    if (pts.length < 2) return null;
+    const n = pts.length;
+    const mx = pts.reduce((a, p) => a + p[0], 0) / n;
+    const my = pts.reduce((a, p) => a + p[1], 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (const [x, y] of pts) {
+      sxy += (x - mx) * (y - my);
+      sxx += (x - mx) * (x - mx);
+    }
+    const b = sxy / sxx;
+    const a = my - b * mx;
+    return {
+      pct: (Math.exp(b) - 1) * 100,
+      n,
+      start: pts[0][0],
+      end: pts[n - 1][0],
+      fit: (i) => Math.exp(a + b * i),
+    };
+  }
+
+  function totalSeries() {
+    return dash.programs.map((_, i) => {
+      const vals = dash.muscles.map((m) => m.series[i]).filter((v) => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+    });
+  }
+
+  function lastValue(series) {
+    for (let i = series.length - 1; i >= 0; i--) if (series[i] != null) return { value: series[i], index: i };
+    return null;
+  }
+
+  // ---------------- Formatting ----------------
+
+  function fmtVol(v) {
+    return Math.round(v).toLocaleString();
+  }
+
+  function fmtPct(p) {
+    const r = Math.round(p * 10) / 10;
+    return (r > 0 ? "+" : "") + r.toFixed(1) + "%";
+  }
+
+  function shortDate(dayStr) {
+    const [y, m, d] = dayStr.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function programLabel(p) {
+    return `${shortDate(p.days[0])} – ${shortDate(p.days[1])}`;
+  }
+
+  function trendClass(pct) {
+    if (pct == null || Math.abs(pct) < 0.5) return "flat";
+    return pct > 0 ? "up" : "down";
+  }
+
+  function trendPill(g, suffix = "/program") {
+    if (!g) return `<span class="trend-pill flat">—</span>`;
+    const cls = trendClass(g.pct);
+    const arrow = cls === "up" ? "▲" : cls === "down" ? "▼" : "◆";
+    return `<span class="trend-pill ${cls}">${arrow} ${fmtPct(g.pct)}<span class="trend-pill-unit">${suffix}</span></span>`;
+  }
+
+  // ---------------- Charts ----------------
+
+  // Line chart drawn at the container's real pixel width so text and dots
+  // stay crisp. The y-axis is fitted to the data (not zero-based): a 5% gain
+  // on 3,800 kg is the whole story and would vanish against a zero baseline.
+  function lineChart({ series, key, height = 132, showTrend = true }) {
+    const w = Math.max(240, body.clientWidth - 64);
+    const padL = 6;
+    const padR = 6;
+    const padT = 22;
+    const padB = 22;
+    const vals = series.filter((v) => v != null);
+    if (vals.length === 0) return `<div class="chart-empty">No data</div>`;
+    const g = showTrend ? growth(series) : null;
+    let lo = Math.min(...vals);
+    let hi = Math.max(...vals);
+    if (g) {
+      for (let i = g.start; i <= g.end; i++) {
+        lo = Math.min(lo, g.fit(i));
+        hi = Math.max(hi, g.fit(i));
+      }
+    }
+    const span = hi - lo || hi * 0.1 || 1;
+    lo -= span * 0.12;
+    hi += span * 0.12;
+    const n = series.length;
+    const x = (i) => (n === 1 ? w / 2 : padL + 10 + (i * (w - padL - padR - 20)) / (n - 1));
+    const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (height - padT - padB);
+    const showVals = dash.showValues.has(key);
+
+    let path = "";
+    let pen = false;
+    series.forEach((v, i) => {
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      path += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    });
+
+    const trend = g
+      ? `<line class="lc-trend" x1="${x(g.start)}" y1="${y(g.fit(g.start))}" x2="${x(g.end)}" y2="${y(g.fit(g.end))}" />`
+      : "";
+
+    // Thin the x labels so they never collide: at most ~one per 46px.
+    const step = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(w / 46))));
+    const last = lastValue(series);
+    const dots = series
+      .map((v, i) => {
+        if (v == null) return "";
+        const isLast = last && i === last.index;
+        const label = showVals || isLast ? `<text class="lc-val" x="${x(i)}" y="${y(v) - 9}">${fmtVol(v)}</text>` : "";
+        return `<g><title>${programLabel(dash.programs[i])}: ${fmtVol(v)} ${dash.unit}</title>
+          <circle class="lc-hit" cx="${x(i)}" cy="${y(v)}" r="14" />
+          <circle class="lc-dot${isLast ? " lc-dot-last" : ""}" cx="${x(i)}" cy="${y(v)}" r="${isLast ? 4.5 : 3.5}" />${label}</g>`;
+      })
+      .join("");
+    const xLabels = dash.programs
+      .map((p, i) => {
+        if ((n - 1 - i) % step !== 0) return "";
+        return `<text class="lc-x" x="${x(i)}" y="${height - 6}">${shortDate(p.days[1])}</text>`;
+      })
+      .join("");
+
+    return `<svg class="line-chart" data-key="${key}" width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" role="img">
+      <line class="lc-base" x1="0" y1="${height - padB}" x2="${w}" y2="${height - padB}" />
+      ${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
+    </svg>`;
+  }
+
+  // Tiny inline trend line for list rows; no axes, last point emphasised.
+  function sparkline(series, { w = 72, h = 26, indexed = false } = {}) {
+    const g = growth(series);
+    const startAt = g ? g.start : 0;
+    const pts = series.map((v, i) => (i >= startAt && v != null ? [i, v] : null)).filter(Boolean);
+    if (pts.length === 0) return `<svg class="spark" width="${w}" height="${h}"></svg>`;
+    const base = pts[0][1];
+    const vals = pts.map(([, v]) => (indexed ? (v / base) * 100 : v));
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    const n = series.length - startAt;
+    const x = (i) => (n <= 1 ? w / 2 : 3 + ((i - startAt) * (w - 6)) / (n - 1));
+    const y = (v) => (hi === lo ? h / 2 : 3 + (1 - (v - lo) / (hi - lo)) * (h - 6));
+    const d = pts.map(([i], k) => `${k ? "L" : "M"}${x(i).toFixed(1)},${y(vals[k]).toFixed(1)}`).join("");
+    const [li] = pts[pts.length - 1];
+    const cls = trendClass(g && g.pct);
+    return `<svg class="spark spark-${cls}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+      <path d="${d}" /><circle cx="${x(li)}" cy="${y(vals[vals.length - 1])}" r="2.6" /></svg>`;
+  }
+
+  // ---------------- Render ----------------
+
+  function render() {
+    if (dash.programs.length === 0 || dash.muscles.length === 0) {
+      body.innerHTML = `<div class="empty-state"><p>No complete A+B program since ${shortDate(SPLIT_START)} yet.</p></div>`;
+      return;
+    }
+    const n = dash.programs.length;
+    const total = totalSeries();
+    const totalG = growth(total);
+    const lastTotal = lastValue(total);
+    const latest = dash.programs[n - 1];
+
+    const ranked = dash.muscles
+      .map((m) => ({ m, g: growth(m.series) }))
+      .sort((a, b) => (b.g ? b.g.pct : -Infinity) - (a.g ? a.g.pct : -Infinity));
+    const maxAbs = Math.max(5, ...ranked.filter((r) => r.g).map((r) => Math.abs(r.g.pct)));
+
+    const momentumRows = ranked
+      .map(({ m, g }) => {
+        const pct = g ? g.pct : 0;
+        const width = (Math.abs(pct) / maxAbs) * 50;
+        const cls = trendClass(g && g.pct);
+        const bar = g
+          ? `<div class="mom-bar mom-${cls}" style="${pct >= 0 ? "left:50%" : `left:${50 - width}%`};width:${Math.max(width, 0.8)}%"></div>`
+          : "";
+        return `<button class="mom-row" data-muscle="${escapeHtml(m.name)}">
+          <span class="mom-name">${escapeHtml(m.name)}</span>
+          ${sparkline(m.series, { indexed: true, w: 56, h: 22 })}
+          <span class="mom-track"><span class="mom-zero"></span>${bar}</span>
+          <span class="mom-pct trend-${cls}">${g ? fmtPct(g.pct) : "—"}</span>
+        </button>`;
+      })
+      .join("");
+
+    const windowLabel = dash.window === "recent" ? `last ${Math.min(RECENT_WINDOW, n)} programs` : `all ${n} programs`;
+
+    const sections = dash.muscles.map((m) => renderMuscle(m)).join("");
+
+    body.innerHTML = `
+      <div class="dash-summary">
+        <div class="dash-kpi">
+          <div class="stat-label">Latest program</div>
+          <div class="dash-kpi-value">${fmtVol(lastTotal.value)}<span class="stat-latest-unit">${dash.unit}</span></div>
+          <div class="stat-sub">${programLabel(latest)}</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="stat-label">Total volume trend</div>
+          <div class="dash-kpi-value">${totalG ? `<span class="trend-${trendClass(totalG.pct)}">${fmtPct(totalG.pct)}</span>` : "—"}</div>
+          <div class="stat-sub">per program · ${windowLabel}</div>
+        </div>
+      </div>
+
+      <div class="seg" role="tablist" aria-label="Trend window">
+        <button class="seg-btn${dash.window === "all" ? " active" : ""}" data-window="all">All programs</button>
+        <button class="seg-btn${dash.window === "recent" ? " active" : ""}" data-window="recent">Last ${RECENT_WINDOW}</button>
+      </div>
+
+      <section class="dash-card">
+        <h2 class="dash-h2">Muscle momentum</h2>
+        <p class="dash-note">Volume growth per A+B program, fitted across ${windowLabel}. Line shows the trend relative to where each muscle started, so small and large muscles compare fairly.</p>
+        <div class="mom-list">${momentumRows}</div>
+      </section>
+
+      ${sections}
+
+      <p class="dash-foot">${n} programs since ${shortDate(SPLIT_START)} · volume is Speediance's own per-set calculation · tap a chart to show every value</p>
+    `;
+  }
+
+  function renderMuscle(m) {
+    const g = growth(m.series);
+    const last = lastValue(m.series);
+    const n = dash.programs.length;
+    const isCurrent = (ex) => ex.series[n - 1] != null;
+    const exRows = [...m.exercises.filter(isCurrent), ...m.exercises.filter((ex) => !isCurrent(ex))]
+      .map((ex) => {
+        const eg = growth(ex.series);
+        const el = lastValue(ex.series);
+        const retired = !el || el.index < n - 1;
+        const open = dash.openExercises.has(ex.groupId);
+        const prev = el ? lastValue(ex.series.slice(0, el.index)) : null;
+        let delta = "";
+        if (el && prev) {
+          const d = el.value - prev.value;
+          const cls = trendClass((d / prev.value) * 100);
+          delta =
+            Math.round(d) === 0
+              ? `<span class="trend-delta trend-flat">± 0</span>`
+              : `<span class="trend-delta trend-${cls}">${d > 0 ? "▲ +" : "▼ "}${fmtVol(d)}</span>`;
+        }
+        return `<div class="ex-row${retired ? " ex-retired" : ""}${open ? " open" : ""}">
+          <button class="ex-row-head" data-ex="${ex.groupId}">
+            <span class="ex-row-main">
+              <span class="ex-row-name">${escapeHtml(ex.name)}</span>
+              <span class="ex-row-meta">${
+                retired
+                  ? `Not in latest program${el ? " · last " + shortDate(dash.programs[el.index].days[1]) : ""}`
+                  : `${fmtVol(el.value)} ${dash.unit} ${delta}`
+              }</span>
+            </span>
+            ${sparkline(ex.series)}
+            ${retired ? `<span class="trend-pill flat">retired</span>` : trendPill(eg, "")}
+          </button>
+          ${open ? `<div class="ex-row-chart">${lineChart({ series: ex.series, key: "ex:" + ex.groupId, height: 120 })}</div>` : ""}
+        </div>`;
+      })
+      .join("");
+
+    return `<section class="dash-card muscle-card" id="muscle-${cssId(m.name)}">
+      <div class="muscle-head">
+        <div>
+          <h2 class="dash-h2">${escapeHtml(m.name)}</h2>
+          <div class="muscle-latest">${last ? fmtVol(last.value) : "—"}<span class="stat-latest-unit">${dash.unit} latest</span></div>
+        </div>
+        ${trendPill(g)}
+      </div>
+      ${lineChart({ series: m.series, key: "m:" + m.name })}
+      <div class="ex-list">${exRows}</div>
+    </section>`;
+  }
+
+  function cssId(s) {
+    return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  }
+
+  // ---------------- Interaction ----------------
+
+  body.addEventListener("click", (e) => {
+    const seg = e.target.closest(".seg-btn");
+    if (seg) {
+      dash.window = seg.dataset.window;
+      writeWindowPref(dash.window);
+      render();
+      return;
+    }
+    const mom = e.target.closest(".mom-row");
+    if (mom) {
+      const target = document.getElementById("muscle-" + cssId(mom.dataset.muscle));
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    const exHead = e.target.closest(".ex-row-head");
+    if (exHead) {
+      const id = Number(exHead.dataset.ex);
+      if (dash.openExercises.has(id)) dash.openExercises.delete(id);
+      else dash.openExercises.add(id);
+      rerenderKeepingScroll();
+      return;
+    }
+    const chart = e.target.closest(".line-chart");
+    if (chart) {
+      const key = chart.dataset.key;
+      if (dash.showValues.has(key)) dash.showValues.delete(key);
+      else dash.showValues.add(key);
+      rerenderKeepingScroll();
+    }
+  });
+
+  function rerenderKeepingScroll() {
+    const top = body.scrollTop;
+    render();
+    body.scrollTop = top;
+  }
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (!document.getElementById("view-progress").classList.contains("active") || !dash.programs.length) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(rerenderKeepingScroll, 150);
+  });
+
+  async function enterProgressView() {
+    showView("progress");
+    body.innerHTML = `<div class="loading-state"><div class="spinner"></div><p>Crunching your volume…</p></div>`;
+    try {
+      await loadDashboardData();
+      render();
+    } catch (e) {
+      if (isAuthError(e)) {
+        requireNewToken(e);
+        return;
+      }
+      body.innerHTML = `<div class="empty-state"><p>Couldn't load progress.</p><p class="error-text">${escapeHtml(e.message)}</p></div>`;
+      toast("Failed to load progress: " + e.message, true);
+    }
+  }
+
+  document.getElementById("btn-progress").addEventListener("click", enterProgressView);
+  document.getElementById("btn-progress-back").addEventListener("click", () => enterWorkoutsView());
+  document.getElementById("btn-progress-refresh").addEventListener("click", enterProgressView);
+})();

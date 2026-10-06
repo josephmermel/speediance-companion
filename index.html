@@ -33,6 +33,7 @@
 <section id="view-workouts" class="view">
   <header class="topbar">
     <h1 class="page-title">Workouts</h1>
+    <button id="btn-progress" class="icon-btn" aria-label="Progress">📈</button>
     <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙</button>
   </header>
   <div id="workouts-list" class="workouts-list"></div>
@@ -106,6 +107,17 @@
   </footer>
 </section>
 
+<!-- PROGRESS DASHBOARD -->
+<section id="view-progress" class="view">
+  <header class="topbar">
+    <button id="btn-progress-back" class="icon-btn" aria-label="Back to workouts">‹</button>
+    <h1 class="page-title">Progress</h1>
+    <button id="btn-progress-refresh" class="icon-btn" aria-label="Refresh">⟳</button>
+  </header>
+  <div id="progress-body" class="progress-body"></div>
+</section>
+
 <script src="app.js"></script>
+<script src="dashboard.js"></script>
 </body>
 </html>

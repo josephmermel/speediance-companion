@@ -7,7 +7,7 @@
   const SPLIT_START = "2026-09-16";
   const WINDOW_KEY = "gmcoach_momentum_window";
   const RECENT_WINDOW = 4; // programs used by the "Last 4" momentum view
-  const FETCH_CONCURRENCY = 4;
+  const FETCH_CONCURRENCY = 6;
 
   const { api, showView, toast, escapeHtml, isAuthError, requireNewToken, enterWorkoutsView } = window.GMCoach;
 
@@ -66,14 +66,111 @@
     return out;
   }
 
-  const exerciseInfoCache = new Map(); // groupId -> {muscle}
+  // ---------------- Local cache ----------------
+  //
+  // GM Manager takes 5-10s per request, and a full load is ~30 of them. Almost
+  // all of it is immutable: an exercise's muscle never changes, and a finished
+  // day's volume never changes. So the raw data is kept in localStorage, the
+  // dashboard draws from it immediately, and a sync only fetches what's new:
+  // the session list, plus volume history for exercises that have a workout
+  // day the cache hasn't seen (today is always re-checked, as it may still be
+  // in progress).
 
-  async function loadDashboardData() {
+  const CACHE_KEY = "gmcoach_dash_cache_v1";
+
+  function accountKey() {
+    let t = "";
+    try {
+      t = localStorage.getItem("gmcoach_token") || "";
+    } catch (_) {
+      /* no storage */
+    }
+    let h = 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
+    return String(h);
+  }
+
+  function emptyStore() {
+    return { account: accountKey(), unit: "kg", sessions: null, muscleOf: {}, vol: {}, checked: {} };
+  }
+
+  function loadStore() {
+    try {
+      const st = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (st && st.account === accountKey()) return st;
+    } catch (_) {
+      /* unreadable cache: start over */
+    }
+    return emptyStore();
+  }
+
+  function saveStore(st) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(st));
+    } catch (_) {
+      /* storage full or blocked: next visit just loads from scratch */
+    }
+  }
+
+  function todayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // Fetches whatever the store is missing and returns the updated store.
+  async function sync(st, onProgress) {
     const sessionsData = await apiRetry(`/sessions?from=${SPLIT_START}&includeExercises=true`);
-    dash.unit = sessionsData.unit || "kg";
-    const sessions = (sessionsData.sessions || []).filter(
-      (s) => s.detailType === "template" || s.detailType === "course"
-    );
+    st.unit = sessionsData.unit || "kg";
+    st.sessions = (sessionsData.sessions || [])
+      .filter((s) => s.detailType === "template" || s.detailType === "course")
+      .map((s) => ({
+        date: s.date,
+        exercises: (s.exercises || []).filter((e) => e.groupId != null).map((e) => ({ groupId: e.groupId, name: e.name })),
+      }));
+
+    const daysOf = new Map(); // groupId -> Set of days performed
+    for (const s of st.sessions) {
+      for (const e of s.exercises) {
+        if (!daysOf.has(e.groupId)) daysOf.set(e.groupId, new Set());
+        daysOf.get(e.groupId).add(s.date);
+      }
+    }
+    const today = todayStr();
+    const todo = [...daysOf.entries()].filter(([gid, days]) => {
+      const checked = new Set(st.checked[gid] || []);
+      return !(gid in st.muscleOf) || [...days].some((d) => d === today || !checked.has(d));
+    });
+
+    let done = 0;
+    if (onProgress) onProgress(done, todo.length);
+    await mapLimit(todo, FETCH_CONCURRENCY, async ([gid, days]) => {
+      if (!(gid in st.muscleOf)) {
+        const c = await apiRetry(`/exercises/${gid}`);
+        st.muscleOf[gid] = c.muscle || (c.muscles && c.muscles[0]) || "Other";
+      }
+      const checked = new Set(st.checked[gid] || []);
+      if ([...days].some((d) => d === today || !checked.has(d))) {
+        const hist = await apiRetry(`/exercises/${gid}/history?limit=200`);
+        const vol = {};
+        for (const h of hist.history || []) {
+          if (h.totalCapacity == null) continue;
+          vol[h.dayStr] = (vol[h.dayStr] || 0) + h.totalCapacity;
+        }
+        st.vol[gid] = vol;
+        st.checked[gid] = [...days].filter((d) => d !== today);
+      }
+      done++;
+      if (onProgress) onProgress(done, todo.length);
+    });
+
+    saveStore(st);
+    return st;
+  }
+
+  // Builds programs and the muscle -> exercise -> series model from the store.
+  function buildModel(st) {
+    dash.unit = st.unit || "kg";
+    const sessions = st.sessions || [];
 
     // Two sessions on one date are one workout day.
     const daysNewestFirst = [...new Set(sessions.map((s) => s.date))].sort().reverse();
@@ -90,10 +187,9 @@
     // Exercises in first-seen order (oldest session first) so muscle groups
     // and their exercises appear in the order the program runs them.
     const exercises = new Map();
-    for (const s of [...sessions].reverse()) {
+    for (const s of [...sessions].sort((a, b) => (a.date < b.date ? -1 : 1))) {
       if (!programOfDay.has(s.date)) continue;
-      for (const e of s.exercises || []) {
-        if (e.groupId == null) continue;
+      for (const e of s.exercises) {
         if (!exercises.has(e.groupId)) {
           exercises.set(e.groupId, { groupId: e.groupId, name: e.name || `#${e.groupId}`, days: new Set() });
         }
@@ -102,27 +198,18 @@
     }
 
     const list = [...exercises.values()];
-    await mapLimit(list, FETCH_CONCURRENCY, async (ex) => {
-      const [info, hist] = await Promise.all([
-        exerciseInfoCache.has(ex.groupId)
-          ? exerciseInfoCache.get(ex.groupId)
-          : apiRetry(`/exercises/${ex.groupId}`).then((c) => {
-              const v = { muscle: c.muscle || (c.muscles && c.muscles[0]) || "Other" };
-              exerciseInfoCache.set(ex.groupId, v);
-              return v;
-            }),
-        apiRetry(`/exercises/${ex.groupId}/history?limit=200`),
-      ]);
-      ex.muscle = info.muscle;
-      // totalCapacity is Speediance's own per-day volume for the movement,
-      // which already accounts for drop-offs within a set and partial reps.
+    for (const ex of list) {
+      ex.muscle = st.muscleOf[ex.groupId] || "Other";
+      // vol holds Speediance's own per-day volume (totalCapacity) for the
+      // movement, which already accounts for drop-offs and partial reps.
+      const vol = st.vol[ex.groupId] || {};
       ex.series = programs.map(() => null);
-      for (const h of hist.history || []) {
-        if (!ex.days.has(h.dayStr) || h.totalCapacity == null) continue;
-        const idx = programOfDay.get(h.dayStr);
-        ex.series[idx] = (ex.series[idx] || 0) + h.totalCapacity;
+      for (const d of ex.days) {
+        if (vol[d] == null) continue;
+        const idx = programOfDay.get(d);
+        ex.series[idx] = (ex.series[idx] || 0) + vol[d];
       }
-    });
+    }
 
     const muscles = new Map();
     for (const ex of list) {
@@ -490,19 +577,57 @@
     resizeTimer = setTimeout(rerenderKeepingScroll, 150);
   });
 
+  const statusEl = document.getElementById("progress-status");
+  let syncGeneration = 0;
+
+  function setStatus(text, isError = false) {
+    statusEl.hidden = !text;
+    statusEl.textContent = text || "";
+    statusEl.classList.toggle("error", isError);
+  }
+
   async function enterProgressView() {
     showView("progress");
-    body.innerHTML = `<div class="loading-state"><div class="spinner"></div><p>Crunching your volume…</p></div>`;
-    try {
-      await loadDashboardData();
+    const gen = ++syncGeneration;
+    const st = loadStore();
+    const hasCache = !!st.sessions;
+
+    if (hasCache) {
+      buildModel(st);
       render();
+      setStatus("Checking for new workouts…");
+    } else {
+      setStatus("");
+      body.innerHTML = `<div class="loading-state"><div class="spinner"></div><p id="dash-load-msg">Loading your workouts…</p></div>`;
+    }
+
+    try {
+      await sync(st, (done, total) => {
+        if (gen !== syncGeneration || total === 0) return;
+        const msg = `Loading ${done} / ${total} exercises…`;
+        if (hasCache) setStatus(msg);
+        else {
+          const el = document.getElementById("dash-load-msg");
+          if (el) el.textContent = msg;
+        }
+      });
+      if (gen !== syncGeneration) return;
+      buildModel(st);
+      if (hasCache) rerenderKeepingScroll();
+      else render();
+      setStatus("");
     } catch (e) {
+      if (gen !== syncGeneration) return;
       if (isAuthError(e)) {
         requireNewToken(e);
         return;
       }
-      body.innerHTML = `<div class="empty-state"><p>Couldn't load progress.</p><p class="error-text">${escapeHtml(e.message)}</p></div>`;
-      toast("Failed to load progress: " + e.message, true);
+      if (hasCache) {
+        setStatus("Couldn't update: " + e.message + " · showing saved data", true);
+      } else {
+        body.innerHTML = `<div class="empty-state"><p>Couldn't load progress.</p><p class="error-text">${escapeHtml(e.message)}</p></div>`;
+        toast("Failed to load progress: " + e.message, true);
+      }
     }
   }
 

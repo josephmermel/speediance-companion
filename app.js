@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const API_BASE = "https://manager.gmvoice.tech/api/v1";
+  const API_BASE = "https://www.gm-manager.com/api/v1";
   const TOKEN_KEY = "gmcoach_token";
   const UNIT_KEY = "gmcoach_unit";
 

@@ -32,14 +32,23 @@
   // ---------------- API helpers ----------------
 
   async function api(path, opts = {}) {
-    const res = await fetch(API_BASE + path, {
-      ...opts,
-      headers: {
-        Authorization: "Bearer " + state.token,
-        "Content-Type": "application/json",
-        ...(opts.headers || {}),
-      },
-    });
+    let res;
+    try {
+      res = await fetch(API_BASE + path, {
+        ...opts,
+        headers: {
+          Authorization: "Bearer " + state.token,
+          "Content-Type": "application/json",
+          ...(opts.headers || {}),
+        },
+      });
+    } catch (_) {
+      // fetch() only rejects when no HTTP response came back at all: offline,
+      // DNS failure, or the browser blocking the response (CORS).
+      const err = new Error(`Can't reach ${API_BASE} (offline, server down, or blocked by CORS)`);
+      err.status = 0;
+      throw err;
+    }
     let body = null;
     try {
       body = await res.json();
@@ -47,10 +56,26 @@
       /* no body */
     }
     if (!res.ok) {
-      const msg = (body && (body.message || body.error)) || `HTTP ${res.status}`;
-      throw new Error(msg);
+      const detail = body && (body.message || body.error);
+      const err = new Error(`HTTP ${res.status} on ${path}` + (detail ? `: ${detail}` : ""));
+      err.status = res.status;
+      throw err;
     }
     return body;
+  }
+
+  // A rejected token sends the user back to the token screen with the reason,
+  // instead of leaving them on an empty list behind a brief toast.
+  function isAuthError(e) {
+    return e && (e.status === 401 || e.status === 403);
+  }
+
+  function requireNewToken(e) {
+    localStorage.removeItem(TOKEN_KEY);
+    state.token = "";
+    tokenError.textContent = "Your API token was rejected (" + e.message + "). Paste a new one from GM Manager.";
+    tokenError.hidden = false;
+    showView("token");
   }
 
   // ---------------- View management ----------------
@@ -75,7 +100,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       el.hidden = true;
-    }, 2600);
+    }, isError ? 8000 : 2600);
   }
 
   // ---------------- Token screen ----------------
@@ -174,6 +199,10 @@
       state.workouts = [...tiles.values()].sort((a, b) => (a.lastPerformedDate < b.lastPerformedDate ? 1 : -1));
       renderWorkouts();
     } catch (e) {
+      if (isAuthError(e)) {
+        requireNewToken(e);
+        return;
+      }
       toast("Failed to load workouts: " + e.message, true);
     } finally {
       workoutsLoading.hidden = true;

@@ -222,7 +222,7 @@
   // stay crisp. The y-axis is fitted to the data (not zero-based): a 5% gain
   // on 3,800 kg is the whole story and would vanish against a zero baseline.
   function lineChart({ series, key, height = 132, showTrend = true }) {
-    const w = Math.max(240, body.clientWidth - 64);
+    const w = Math.max(240, chartWidth());
     const padL = 6;
     const padR = 6;
     const padT = 22;
@@ -285,6 +285,17 @@
       <line class="lc-base" x1="0" y1="${height - padB}" x2="${w}" y2="${height - padB}" />
       ${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
     </svg>`;
+  }
+
+  // Inner width of a dashboard card, so charts fit the card (capped at
+  // 640px wide on desktop) rather than the whole page.
+  function chartWidth() {
+    const card = body.querySelector(".dash-card");
+    if (card) {
+      const cs = getComputedStyle(card);
+      return card.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    }
+    return Math.min(body.clientWidth - 28, 640) - 34;
   }
 
   // Tiny inline trend line for list rows; no axes, last point emphasised.

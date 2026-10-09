@@ -325,145 +325,97 @@
   // stay crisp. The y-axis is fitted to the data (not zero-based): a 5% gain
   // on 3,800 kg is the whole story and would vanish against a zero baseline.
   //
-  // `secondary` (max weight) gets its own scale on the right-hand axis, so a
-  // ~30 kg weight line and a ~1,000 kg volume line share one plot. Each axis
-  // is labelled with its range and the legend names both lines.
-  function lineChart({ series, key, height = 132, showTrend = true, secondary = null }) {
+  // `bars` (max weight) are drawn as muted columns behind the line on their
+  // own zero-based scale, each labelled with its value at the base. Bars
+  // rather than a second line keep volume the visual lead, and avoid
+  // implying that where two independently scaled lines cross means anything.
+  function lineChart({ series, key, height = 132, showTrend = true, bars = null }) {
     const w = Math.max(240, chartWidth());
     const vals = series.filter((v) => v != null);
     if (vals.length === 0) return `<div class="chart-empty">No data</div>`;
-    const sec = secondary && secondary.some((v) => v != null) ? secondary : null;
-    const padL = sec ? 40 : 6;
-    const padR = sec ? 34 : 6;
+    const barVals = bars && bars.some((v) => v != null) ? bars : null;
+    const padL = 6;
+    const padR = 6;
     const padT = 22;
-    const padB = 22;
-    const g = showTrend ? growth(series) : null;
-
-    function scale(values, extra = []) {
-      let lo = Math.min(...values, ...extra);
-      let hi = Math.max(...values, ...extra);
-      const span = hi - lo || hi * 0.1 || 1;
-      lo -= span * 0.12;
-      hi += span * 0.12;
-      return { lo, hi, y: (v) => padT + (1 - (v - lo) / (hi - lo)) * (height - padT - padB) };
-    }
-    const fitVals = g ? Array.from({ length: g.end - g.start + 1 }, (_, k) => g.fit(g.start + k)) : [];
-    const ys = scale(vals, fitVals);
-    const y = ys.y;
-    const ws = sec ? scale(sec.filter((v) => v != null)) : null;
-
-    const n = series.length;
-    // With a right-hand axis, points sit further in so their value labels
-    // clear the axis numbers.
-    const inset = sec ? 22 : 10;
-    const x = (i) => (n === 1 ? (padL + w - padR) / 2 : padL + inset + (i * (w - padL - padR - 2 * inset)) / (n - 1));
-
-    // Value labels go above their point, except where the other line's point
-    // is higher: then the two labels split (upper line above, lower below) so
-    // they never land on each other. Labels near an edge flip inward.
+    // With bars, a row under the baseline holds the weight values, so they
+    // never sit under the volume line.
+    const padB = barVals ? 36 : 22;
     const plotTop = padT;
     const plotBot = height - padB;
-    function labelY(py, above) {
-      let ly = above ? py - 9 : py + 16;
-      if (ly < plotTop - 8) ly = py + 16;
-      if (ly > plotBot - 2) ly = py - 9;
-      return ly;
+    const g = showTrend ? growth(series) : null;
+
+    let lo = Math.min(...vals);
+    let hi = Math.max(...vals);
+    if (g) {
+      for (let i = g.start; i <= g.end; i++) {
+        lo = Math.min(lo, g.fit(i));
+        hi = Math.max(hi, g.fit(i));
+      }
     }
+    const span = hi - lo || hi * 0.1 || 1;
+    lo -= span * 0.12;
+    hi += span * 0.12;
+    const y = (v) => plotTop + (1 - (v - lo) / (hi - lo)) * (plotBot - plotTop);
+
+    const n = series.length;
+    const x = (i) => (n === 1 ? w / 2 : padL + 10 + (i * (w - padL - padR - 20)) / (n - 1));
     const showVals = dash.showValues.has(key);
 
-    function pathFor(values, yf) {
-      let d = "";
-      let pen = false;
-      values.forEach((v, i) => {
-        if (v == null) {
-          pen = false;
-          return;
-        }
-        d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${yf(v).toFixed(1)}`;
-        pen = true;
-      });
-      return d;
-    }
+    // Value labels sit above their point, flipping below near the top edge.
+    const labelY = (py) => (py - 9 < plotTop - 8 ? py + 16 : py - 9);
 
-    // Label positions for both lines at each point, resolved together.
-    const volLabelY = [];
-    const wLabelY = [];
+    let path = "";
+    let pen = false;
     series.forEach((v, i) => {
-      const w8 = sec ? sec[i] : null;
-      if (v == null || w8 == null) {
-        if (v != null) volLabelY[i] = labelY(y(v), true);
-        if (w8 != null) wLabelY[i] = labelY(ws.y(w8), true);
+      if (v == null) {
+        pen = false;
         return;
       }
-      const vy = y(v);
-      const wy = ws.y(w8);
-      let lv = labelY(vy, wy >= vy);
-      let lw = labelY(wy, wy < vy);
-      if (Math.abs(lv - lw) < 13) {
-        // Points too close to separate around: stack both labels on one side.
-        const topY = Math.min(vy, wy) - 9;
-        if (topY - 13 >= plotTop - 8) {
-          lv = topY - 13;
-          lw = topY;
-        } else {
-          lv = Math.max(vy, wy) + 16;
-          lw = lv + 13;
-        }
-      }
-      volLabelY[i] = lv;
-      wLabelY[i] = lw;
+      path += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
     });
 
     const trend = g
       ? `<line class="lc-trend" x1="${x(g.start)}" y1="${y(g.fit(g.start))}" x2="${x(g.end)}" y2="${y(g.fit(g.end))}" />`
       : "";
 
+    let barLayer = "";
+    let legend = "";
+    if (barVals) {
+      const wMax = Math.max(...barVals.filter((v) => v != null));
+      const slot = n === 1 ? 60 : (w - padL - padR - 20) / (n - 1);
+      const bw = Math.max(6, Math.min(34, slot * 0.55));
+      const lastB = lastValue(barVals);
+      barLayer = barVals
+        .map((v, i) => {
+          if (v == null) return "";
+          const top = plotBot - (v / (wMax * 1.4)) * (plotBot - plotTop);
+          const isLast = lastB && i === lastB.index;
+          const label = bw >= 22 || showVals || isLast ? `<text class="lc-bar-val" x="${x(i)}" y="${plotBot + 13}">${fmtWeight(v)}</text>` : "";
+          return `<g><title>${programLabel(dash.programs[i])}: max ${fmtWeight(v)} ${dash.unit}</title>
+            <path class="lc-bar${isLast ? " lc-bar-last" : ""}" d="M${x(i) - bw / 2},${plotBot}V${top + 4}q0,-4 4,-4h${bw - 8}q4,0 4,4V${plotBot}Z" />${label}</g>`;
+        })
+        .join("");
+      legend = `<div class="lc-legend">
+        <span><i class="lg-vol"></i>Volume (${dash.unit})</span>
+        <span><i class="lg-w"></i>Max weight (${dash.unit})</span>
+      </div>`;
+    }
+
     // Thin the x labels so they never collide: at most ~one per 46px.
-    const plotW = w - padL - padR;
-    const step = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 46))));
+    const step = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(w / 46))));
     const last = lastValue(series);
     const dots = series
       .map((v, i) => {
         if (v == null) return "";
         const isLast = last && i === last.index;
-        const label = showVals || isLast ? `<text class="lc-val" x="${x(i)}" y="${volLabelY[i]}">${fmtVol(v)}</text>` : "";
-        const wt = sec && sec[i] != null ? ` · max ${fmtWeight(sec[i])} ${dash.unit}` : "";
+        const label = showVals || isLast ? `<text class="lc-val" x="${x(i)}" y="${labelY(y(v))}">${fmtVol(v)}</text>` : "";
+        const wt = barVals && barVals[i] != null ? ` · max ${fmtWeight(barVals[i])} ${dash.unit}` : "";
         return `<g><title>${programLabel(dash.programs[i])}: ${fmtVol(v)} ${dash.unit} volume${wt}</title>
           <circle class="lc-hit" cx="${x(i)}" cy="${y(v)}" r="14" />
           <circle class="lc-dot${isLast ? " lc-dot-last" : ""}" cx="${x(i)}" cy="${y(v)}" r="${isLast ? 4.5 : 3.5}" />${label}</g>`;
       })
       .join("");
-
-    let secLayer = "";
-    let axes = "";
-    let legend = "";
-    if (sec) {
-      const lastW = lastValue(sec);
-      const secDots = sec
-        .map((v, i) => {
-          if (v == null) return "";
-          const isLast = lastW && i === lastW.index;
-          const label = showVals || isLast ? `<text class="lc-val lc-val-w" x="${x(i)}" y="${wLabelY[i]}">${fmtWeight(v)}</text>` : "";
-          return `<g><title>${programLabel(dash.programs[i])}: max ${fmtWeight(v)} ${dash.unit}</title>
-            <rect class="lc-dot-w" x="${x(i) - 3.5}" y="${ws.y(v) - 3.5}" width="7" height="7" rx="1.5" />${label}</g>`;
-        })
-        .join("");
-      secLayer = `<path class="lc-line-w" d="${pathFor(sec, ws.y)}" />${secDots}`;
-      const top = padT;
-      const bot = height - padB;
-      const vAt = (yy) => ys.lo + (1 - (yy - padT) / (height - padT - padB)) * (ys.hi - ys.lo);
-      const wAt = (yy) => ws.lo + (1 - (yy - padT) / (height - padT - padB)) * (ws.hi - ws.lo);
-      axes = `
-        <text class="lc-axis" x="${padL - 6}" y="${top + 4}" text-anchor="end">${fmtVol(vAt(top))}</text>
-        <text class="lc-axis" x="${padL - 6}" y="${bot}" text-anchor="end">${fmtVol(vAt(bot))}</text>
-        <text class="lc-axis" x="${w - padR + 6}" y="${top + 4}" text-anchor="start">${fmtWeight(wAt(top))}</text>
-        <text class="lc-axis" x="${w - padR + 6}" y="${bot}" text-anchor="start">${fmtWeight(wAt(bot))}</text>`;
-      legend = `<div class="lc-legend">
-        <span><i class="lg-vol"></i>Volume (${dash.unit}) · left</span>
-        <span><i class="lg-w"></i>Max weight (${dash.unit}) · right</span>
-      </div>`;
-    }
-
     const xLabels = dash.programs
       .map((p, i) => {
         if ((n - 1 - i) % step !== 0) return "";
@@ -472,8 +424,8 @@
       .join("");
 
     return `${legend}<svg class="line-chart" data-key="${key}" width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" role="img">
-      <line class="lc-base" x1="${padL}" y1="${height - padB}" x2="${w - padR}" y2="${height - padB}" />
-      ${axes}${trend}${secLayer}<path class="lc-line" d="${pathFor(series, y)}" />${dots}${xLabels}
+      ${barLayer}<line class="lc-base" x1="0" y1="${plotBot}" x2="${w}" y2="${plotBot}" />
+      ${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
     </svg>`;
   }
 
@@ -612,7 +564,7 @@
             ${sparkline(ex.series)}
             ${retired ? `<span class="trend-pill flat">retired</span>` : trendPill(eg, "")}
           </button>
-          ${open ? `<div class="ex-row-chart">${lineChart({ series: ex.series, secondary: ex.maxWeight, key: "ex:" + ex.groupId, height: 150 })}</div>` : ""}
+          ${open ? `<div class="ex-row-chart">${lineChart({ series: ex.series, bars: ex.maxWeight, key: "ex:" + ex.groupId, height: 160 })}</div>` : ""}
         </div>`;
       })
       .join("");

@@ -709,3 +709,15 @@ button {
   text-align: center;
 }
 .progress-status.error { color: var(--danger); }
+
+/* Max weight: second line on the exercise drill-down, on its own right-hand scale */
+:root { --weight-line: #3987e5; }
+@media (prefers-color-scheme: light) { :root { --weight-line: #2a78d6; } }
+.lc-line-w { fill: none; stroke: var(--weight-line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.lc-dot-w { fill: var(--weight-line); stroke: var(--bg-elev); stroke-width: 1.5; }
+.lc-axis { fill: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+.lc-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--text-dim); margin: 2px 0 2px; }
+.lc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lc-legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+.lg-vol { background: var(--accent); }
+.lg-w { background: var(--weight-line); }

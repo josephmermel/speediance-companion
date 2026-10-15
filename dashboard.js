@@ -384,7 +384,6 @@
       ? `<line class="lc-trend" x1="${x(g.start)}" y1="${y(g.fit(g.start))}" x2="${x(g.end)}" y2="${y(g.fit(g.end))}" />`
       : "";
 
-    let bands = "";
     let strip = "";
     let legend = "";
     if (wts) {
@@ -401,30 +400,51 @@
       let wlo = Math.min(...known);
       let whi = Math.max(...known);
       const wspan = whi - wlo || Math.max(1, whi * 0.1);
-      wlo -= wspan * 0.15;
-      whi += wspan * 0.15;
+      // The lightest load sits about a third of the way up, so even it reads
+      // as a filled step.
+      wlo -= wspan * 0.6;
+      whi += wspan * 0.1;
       const wy = (v) => stripTop + (1 - (v - wlo) / (whi - wlo)) * stripH;
 
-      const bandW = Math.min(slot * 0.8, 56);
-      bands = wts
-        .map((v, i) =>
-          change[i] > 0
-            ? `<rect class="lc-up-band" x="${x(i) - bandW / 2}" y="${plotTop - 14}" width="${bandW}" height="${stripBot - plotTop + 18}" rx="6" />`
-            : ""
-        )
+      // A small arrow just above the strip marks each program where the max
+      // weight changed, so a volume dip right above an ▲ reads as "heavier load".
+      const arrows = wts
+        .map((v, i) => {
+          if (!change[i]) return "";
+          const ax = x(i);
+          const tip = stripTop - 10;
+          const base = stripTop - 4;
+          const d = change[i] > 0 ? `M${ax - 4},${base}L${ax},${tip}L${ax + 4},${base}Z` : `M${ax - 4},${tip}L${ax},${base}L${ax + 4},${tip}Z`;
+          return `<path class="lc-warrow" d="${d}" />`;
+        })
         .join("");
 
-      // Step line: a load holds until the next program changes it.
+      // Step line: a load holds until the next program changes it. The area
+      // under it is filled so each run reads as a step.
       let d = "";
+      let area = "";
       let lastX = null;
+      const closeArea = () => {
+        if (lastX != null) area += `V${stripBot}Z`;
+      };
       wts.forEach((v, i) => {
         if (v == null) {
+          closeArea();
           lastX = null;
           return;
         }
-        d += lastX == null ? `M${x(i).toFixed(1)},${wy(v).toFixed(1)}` : `H${x(i).toFixed(1)}V${wy(v).toFixed(1)}`;
+        const px = x(i).toFixed(1);
+        const py = wy(v).toFixed(1);
+        if (lastX == null) {
+          d += `M${px},${py}`;
+          area += `M${px},${stripBot}V${py}`;
+        } else {
+          d += `H${px}V${py}`;
+          area += `H${px}V${py}`;
+        }
         lastX = x(i);
       });
+      closeArea();
       const wDots = wts
         .map((v, i) =>
           v == null
@@ -442,18 +462,17 @@
           if (v == null) return "";
           const show = showVals || change[i] !== 0 || (lastW && i === lastW.index) || (n - 1 - i) % wStep === 0;
           if (!show) return "";
-          const cls = change[i] > 0 ? " up" : change[i] < 0 ? " down" : "";
-          const arrow = change[i] > 0 ? "▲" : change[i] < 0 ? "▼" : "";
-          return `<text class="lc-wval${cls}" x="${x(i)}" y="${stripBot + 13}">${arrow}${fmtWeight(v)}</text>`;
+          const cls = change[i] > 0 ? " up" : "";
+          return `<text class="lc-wval${cls}" x="${x(i)}" y="${stripBot + 13}">${fmtWeight(v)}</text>`;
         })
         .join("");
 
-      strip = `<line class="lc-strip-base" x1="0" y1="${stripBot}" x2="${w}" y2="${stripBot}" />
-        <path class="lc-wline" d="${d}" />${wDots}${wLabels}`;
+      strip = `<path class="lc-warea" d="${area}" /><line class="lc-strip-base" x1="0" y1="${stripBot}" x2="${w}" y2="${stripBot}" />
+        <path class="lc-wline" d="${d}" />${wDots}${arrows}${wLabels}`;
       legend = `<div class="lc-legend">
         <span><i class="lg-vol"></i>Volume (${dash.unit})</span>
         <span><i class="lg-w"></i>Max weight (${dash.unit}), strip below</span>
-        <span><i class="lg-up"></i>Weight went up</span>
+        <span><i class="lg-up">▲</i>Weight changed</span>
       </div>`;
     }
 
@@ -479,7 +498,7 @@
       .join("");
 
     return `${legend}<svg class="line-chart" data-key="${key}" width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" role="img">
-      ${bands}<line class="lc-base" x1="0" y1="${plotBot}" x2="${w}" y2="${plotBot}" />
+      <line class="lc-base" x1="0" y1="${plotBot}" x2="${w}" y2="${plotBot}" />
       ${strip}${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
     </svg>`;
   }
@@ -583,16 +602,25 @@
           const reg = regions.get(muscle);
           const g = reg ? growth(reg.series) : null;
           const fill = reg ? fillFor(g ? g.pct : null) : "var(--body-base)";
-          const attrs = reg ? ` class="bm-trained" data-muscle="${escapeHtml(reg.muscles[0])}"` : "";
-          const title = reg ? `<title>${escapeHtml(reg.muscles.join(" + "))}: ${g ? fmtPct(g.pct) + " per program" : "not enough data"}</title>` : "";
-          return points.map((pts) => `<polygon points="${pts}" style="fill:${fill}"${attrs}>${title}</polygon>`).join("");
+          const tip = reg
+            ? reg.muscles
+                .map((name) => {
+                  const m = dash.muscles.find((mm) => mm.name === name);
+                  const mg = growth(m.series);
+                  const last = lastValue(m.series);
+                  return `${name}|${mg ? fmtPct(mg.pct) + " per program" : "not enough data"}|${last ? fmtVol(last.value) + " " + dash.unit + " latest" : ""}|${trendClass(mg && mg.pct)}`;
+                })
+                .join(";")
+            : "";
+          const attrs = reg ? ` class="bm-trained" data-muscle="${escapeHtml(reg.muscles[0])}" data-tip="${escapeHtml(tip)}"` : "";
+          return points.map((pts) => `<polygon points="${pts}" style="fill:${fill}"${attrs}></polygon>`).join("");
         })
         .join("");
       return `<figure class="bm-view"><svg viewBox="0 0 100 200" role="img" aria-label="${name} view">${polys}</svg><figcaption>${name}</figcaption></figure>`;
     }
 
     const lim = Math.round(maxAbs);
-    return `<div class="body-map">${view("Front", map.anterior)}${view("Back", map.posterior)}</div>
+    return `<div class="body-map">${view("Front", map.anterior)}${view("Back", map.posterior)}<div class="bm-tip" hidden></div></div>
       <div class="bm-scale"><span>−${lim}%</span><i></i><span>0</span><i class="pos"></i><span>+${lim}%</span><b></b><span>not trained</span></div>`;
   }
 
@@ -731,7 +759,67 @@
 
   // ---------------- Interaction ----------------
 
+  // Body-map tooltip: follows the pointer on hover. On touch, the first tap
+  // on a muscle shows its tooltip and a second tap jumps to its section.
+  let lastPointer = "mouse";
+  let tipFor = null;
+
+  function showTip(poly, clientX, clientY) {
+    const map = poly.closest(".body-map");
+    const tip = map && map.querySelector(".bm-tip");
+    if (!tip) return;
+    tip.innerHTML = poly.dataset.tip
+      .split(";")
+      .map((row) => {
+        const [name, stat, latest, cls] = row.split("|");
+        return `<div class="bm-tip-row"><b>${escapeHtml(name)}</b><span class="trend-${cls}">${escapeHtml(stat)}</span>${
+          latest ? `<small>${escapeHtml(latest)}</small>` : ""
+        }</div>`;
+      })
+      .join("");
+    tip.hidden = false;
+    const box = map.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left = clientX - box.left + 12;
+    let top = clientY - box.top - th - 10;
+    if (left + tw > box.width) left = clientX - box.left - tw - 12;
+    if (top < 0) top = clientY - box.top + 14;
+    tip.style.left = Math.max(0, left) + "px";
+    tip.style.top = top + "px";
+    tipFor = poly.dataset.muscle;
+  }
+
+  function hideTip() {
+    const tip = body.querySelector(".bm-tip");
+    if (tip) tip.hidden = true;
+    tipFor = null;
+  }
+
+  body.addEventListener("pointerdown", (e) => {
+    lastPointer = e.pointerType;
+  });
+  body.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const poly = e.target.closest(".bm-trained");
+    if (poly) showTip(poly, e.clientX, e.clientY);
+    else if (tipFor) hideTip();
+  });
+  body.addEventListener("pointerleave", (e) => {
+    // Touch fires pointerleave on every lift; only a mouse really leaves.
+    if (e.pointerType === "mouse") hideTip();
+  });
+  body.addEventListener("scroll", () => {
+    if (lastPointer !== "mouse") hideTip();
+  });
+
   body.addEventListener("click", (e) => {
+    const poly = e.target.closest(".bm-trained");
+    if (poly && lastPointer !== "mouse" && tipFor !== poly.dataset.muscle) {
+      showTip(poly, e.clientX, e.clientY);
+      return;
+    }
+    if (!poly && tipFor && lastPointer !== "mouse") hideTip();
     const seg = e.target.closest(".seg-btn");
     if (seg) {
       dash.window = seg.dataset.window;

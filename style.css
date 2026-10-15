@@ -726,3 +726,18 @@ button {
 .lg-vol { background: var(--accent); }
 .lg-w { background: var(--weight); height: 2px !important; }
 .lg-up { width: 10px !important; height: 12px !important; border-radius: 3px !important; background: color-mix(in srgb, var(--weight) 30%, transparent); }
+
+/* Body map in the momentum card */
+:root { --body-base: #262d3a; --body-flat: #4d5566; }
+@media (prefers-color-scheme: light) { :root { --body-base: #e3e7ee; --body-flat: #b4bbc8; } }
+.body-map { display: flex; justify-content: center; gap: 8px; margin: 4px 0 6px; }
+.bm-view { margin: 0; flex: 1; max-width: 150px; text-align: center; }
+.bm-view svg { width: 100%; height: auto; max-height: 280px; display: block; margin: 0 auto; }
+.bm-view polygon { stroke: var(--bg-elev); stroke-width: 0.5; stroke-linejoin: round; }
+.bm-trained { cursor: pointer; }
+.bm-trained:hover { opacity: 0.85; }
+.bm-view figcaption { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.bm-scale { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; color: var(--text-dim); margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.bm-scale i { display: inline-block; width: 56px; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--danger), var(--body-flat)); }
+.bm-scale i.pos { background: linear-gradient(to right, var(--body-flat), var(--accent)); }
+.bm-scale b { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--body-base); border: 1px solid var(--border); margin-left: 8px; }

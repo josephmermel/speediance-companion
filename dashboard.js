@@ -517,6 +517,85 @@
 
   // ---------------- Render ----------------
 
+  // ---------------- Body map ----------------
+
+  // Speediance's primary-muscle names -> regions of the body-map drawing
+  // (body-map-data.js). Side delts have no region of their own, so they
+  // colour the front deltoids; rear delts colour the back deltoids.
+  const REGION_OF = {
+    "side delts": ["front-deltoids"],
+    "front delts": ["front-deltoids"],
+    delts: ["front-deltoids", "back-deltoids"],
+    shoulders: ["front-deltoids", "back-deltoids"],
+    "rear delts": ["back-deltoids"],
+    lats: ["upper-back"],
+    "upper back": ["upper-back"],
+    rhomboids: ["upper-back"],
+    traps: ["trapezius"],
+    trapezius: ["trapezius"],
+    "lower back": ["lower-back"],
+    pecs: ["chest"],
+    chest: ["chest"],
+    biceps: ["biceps"],
+    triceps: ["triceps"],
+    forearms: ["forearm"],
+    abs: ["abs"],
+    obliques: ["obliques"],
+    quads: ["quadriceps"],
+    quadriceps: ["quadriceps"],
+    hamstrings: ["hamstring"],
+    glutes: ["gluteal"],
+    adductors: ["adductor"],
+    abductors: ["abductors"],
+    calves: ["calves", "left-soleus", "right-soleus"],
+  };
+
+  // Front and back views, each region coloured by the fitted growth of the
+  // muscle groups drawn there: green for growing, red for shrinking, grey
+  // for flat, and the plain body colour for muscles this split doesn't train.
+  // The colour scale is shared with the momentum bars below (same maxAbs).
+  function bodyMap(maxAbs) {
+    const map = window.BODY_MAP;
+    if (!map) return "";
+    const regions = new Map(); // region -> {muscles: [names], series}
+    for (const m of dash.muscles) {
+      for (const r of REGION_OF[m.name.toLowerCase()] || []) {
+        if (!regions.has(r)) regions.set(r, { muscles: [], series: dash.programs.map(() => null) });
+        const reg = regions.get(r);
+        reg.muscles.push(m.name);
+        m.series.forEach((v, i) => {
+          if (v != null) reg.series[i] = (reg.series[i] || 0) + v;
+        });
+      }
+    }
+
+    function fillFor(pct) {
+      if (pct == null) return "var(--body-base)";
+      const t = Math.min(1, Math.abs(pct) / maxAbs);
+      if (Math.abs(pct) < 0.5) return "var(--body-flat)";
+      const hue = pct > 0 ? "var(--accent)" : "var(--danger)";
+      return `color-mix(in srgb, ${hue} ${Math.round(30 + 70 * t)}%, var(--body-base))`;
+    }
+
+    function view(name, items) {
+      const polys = items
+        .map(({ muscle, points }) => {
+          const reg = regions.get(muscle);
+          const g = reg ? growth(reg.series) : null;
+          const fill = reg ? fillFor(g ? g.pct : null) : "var(--body-base)";
+          const attrs = reg ? ` class="bm-trained" data-muscle="${escapeHtml(reg.muscles[0])}"` : "";
+          const title = reg ? `<title>${escapeHtml(reg.muscles.join(" + "))}: ${g ? fmtPct(g.pct) + " per program" : "not enough data"}</title>` : "";
+          return points.map((pts) => `<polygon points="${pts}" style="fill:${fill}"${attrs}>${title}</polygon>`).join("");
+        })
+        .join("");
+      return `<figure class="bm-view"><svg viewBox="0 0 100 200" role="img" aria-label="${name} view">${polys}</svg><figcaption>${name}</figcaption></figure>`;
+    }
+
+    const lim = Math.round(maxAbs);
+    return `<div class="body-map">${view("Front", map.anterior)}${view("Back", map.posterior)}</div>
+      <div class="bm-scale"><span>−${lim}%</span><i></i><span>0</span><i class="pos"></i><span>+${lim}%</span><b></b><span>not trained</span></div>`;
+  }
+
   function render() {
     if (dash.programs.length === 0 || dash.muscles.length === 0) {
       body.innerHTML = `<div class="empty-state"><p>No complete A+B program since ${shortDate(SPLIT_START)} yet.</p></div>`;
@@ -574,8 +653,17 @@
       </div>
 
       <section class="dash-card">
+        <div class="muscle-head">
+          <h2 class="dash-h2">Total volume</h2>
+          ${trendPill(totalG)}
+        </div>
+        ${lineChart({ series: total, key: "total" })}
+      </section>
+
+      <section class="dash-card">
         <h2 class="dash-h2">Muscle momentum</h2>
-        <p class="dash-note">Volume growth per A+B program, fitted across ${windowLabel}. Line shows the trend relative to where each muscle started, so small and large muscles compare fairly.</p>
+        <p class="dash-note">Volume growth per A+B program, fitted across ${windowLabel}. Colours and bars share one scale, so small and large muscles compare fairly. Tap a muscle to jump to it.</p>
+        ${bodyMap(maxAbs)}
         <div class="mom-list">${momentumRows}</div>
       </section>
 
@@ -651,7 +739,7 @@
       render();
       return;
     }
-    const mom = e.target.closest(".mom-row");
+    const mom = e.target.closest(".mom-row, .bm-trained");
     if (mom) {
       const target = document.getElementById("muscle-" + cssId(mom.dataset.muscle));
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });

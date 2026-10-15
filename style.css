@@ -710,12 +710,19 @@ button {
 }
 .progress-status.error { color: var(--danger); }
 
-/* Max weight: muted bars behind the volume line on exercise drill-downs */
-.lc-bar { fill: color-mix(in srgb, var(--text-dim) 22%, transparent); }
-.lc-bar-last { fill: color-mix(in srgb, var(--text-dim) 36%, transparent); }
-.lc-bar-val { fill: var(--text-dim); font-size: 10px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+/* Max weight: a strip under the exercise drill-down, plus tinted columns
+   where the weight went up. Muted blue so the green volume line leads. */
+:root { --weight: #8ea3bf; }
+@media (prefers-color-scheme: light) { :root { --weight: #5d7699; } }
+.lc-up-band { fill: color-mix(in srgb, var(--weight) 16%, transparent); }
+.lc-strip-base { stroke: var(--border); stroke-width: 1; }
+.lc-wline { fill: none; stroke: var(--weight); stroke-width: 1.5; stroke-linejoin: round; }
+.lc-wdot { fill: var(--weight); }
+.lc-wval { fill: var(--text-dim); font-size: 10px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.lc-wval.up { fill: var(--text); font-weight: 800; }
 .lc-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--text-dim); margin: 2px 0 2px; }
 .lc-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .lc-legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
 .lg-vol { background: var(--accent); }
-.lg-w { width: 10px !important; height: 10px !important; border-radius: 2px !important; background: color-mix(in srgb, var(--text-dim) 36%, transparent); }
+.lg-w { background: var(--weight); height: 2px !important; }
+.lg-up { width: 10px !important; height: 12px !important; border-radius: 3px !important; background: color-mix(in srgb, var(--weight) 30%, transparent); }

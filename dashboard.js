@@ -325,23 +325,27 @@
   // stay crisp. The y-axis is fitted to the data (not zero-based): a 5% gain
   // on 3,800 kg is the whole story and would vanish against a zero baseline.
   //
-  // `bars` (max weight) are drawn as muted columns behind the line on their
-  // own zero-based scale, each labelled with its value at the base. Bars
-  // rather than a second line keep volume the visual lead, and avoid
-  // implying that where two independently scaled lines cross means anything.
-  function lineChart({ series, key, height = 132, showTrend = true, bars = null }) {
+  // `weights` (max weight per program) adds a thin strip under the plot that
+  // shares its x positions: a step line on its own fitted scale, plus a value
+  // row where changes carry ▲/▼. Every program where the max weight went up
+  // is tinted down through both the plot and the strip, so a volume dip
+  // inside a tinted column reads as "heavier load", and a dip outside one as
+  // a possible loss of strength. A separate strip (not a second y-axis on the
+  // same plot) means the two lines can't cross and suggest a false link.
+  function lineChart({ series, key, height = 132, showTrend = true, weights = null }) {
     const w = Math.max(240, chartWidth());
     const vals = series.filter((v) => v != null);
     if (vals.length === 0) return `<div class="chart-empty">No data</div>`;
-    const barVals = bars && bars.some((v) => v != null) ? bars : null;
+    const wts = weights && weights.some((v) => v != null) ? weights : null;
     const padL = 6;
     const padR = 6;
     const padT = 22;
-    // With bars, a row under the baseline holds the weight values, so they
-    // never sit under the volume line.
-    const padB = barVals ? 36 : 22;
     const plotTop = padT;
-    const plotBot = height - padB;
+    // Bottom-up with a weight strip: dates, weight values, the strip, a gap.
+    const stripH = 26;
+    const stripBot = height - 34;
+    const stripTop = stripBot - stripH;
+    const plotBot = wts ? stripTop - 12 : height - 22;
     const g = showTrend ? growth(series) : null;
 
     let lo = Math.min(...vals);
@@ -359,6 +363,7 @@
 
     const n = series.length;
     const x = (i) => (n === 1 ? w / 2 : padL + 10 + (i * (w - padL - padR - 20)) / (n - 1));
+    const slot = n === 1 ? 60 : (w - padL - padR - 20) / (n - 1);
     const showVals = dash.showValues.has(key);
 
     // Value labels sit above their point, flipping below near the top edge.
@@ -379,26 +384,76 @@
       ? `<line class="lc-trend" x1="${x(g.start)}" y1="${y(g.fit(g.start))}" x2="${x(g.end)}" y2="${y(g.fit(g.end))}" />`
       : "";
 
-    let barLayer = "";
+    let bands = "";
+    let strip = "";
     let legend = "";
-    if (barVals) {
-      const wMax = Math.max(...barVals.filter((v) => v != null));
-      const slot = n === 1 ? 60 : (w - padL - padR - 20) / (n - 1);
-      const bw = Math.max(6, Math.min(34, slot * 0.55));
-      const lastB = lastValue(barVals);
-      barLayer = barVals
+    if (wts) {
+      // Change vs the previous program that had this exercise.
+      const change = wts.map(() => 0);
+      let prev = null;
+      wts.forEach((v, i) => {
+        if (v == null) return;
+        if (prev != null) change[i] = Math.abs(v - prev) < 0.01 ? 0 : Math.sign(v - prev);
+        prev = v;
+      });
+
+      const known = wts.filter((v) => v != null);
+      let wlo = Math.min(...known);
+      let whi = Math.max(...known);
+      const wspan = whi - wlo || Math.max(1, whi * 0.1);
+      wlo -= wspan * 0.15;
+      whi += wspan * 0.15;
+      const wy = (v) => stripTop + (1 - (v - wlo) / (whi - wlo)) * stripH;
+
+      const bandW = Math.min(slot * 0.8, 56);
+      bands = wts
+        .map((v, i) =>
+          change[i] > 0
+            ? `<rect class="lc-up-band" x="${x(i) - bandW / 2}" y="${plotTop - 14}" width="${bandW}" height="${stripBot - plotTop + 18}" rx="6" />`
+            : ""
+        )
+        .join("");
+
+      // Step line: a load holds until the next program changes it.
+      let d = "";
+      let lastX = null;
+      wts.forEach((v, i) => {
+        if (v == null) {
+          lastX = null;
+          return;
+        }
+        d += lastX == null ? `M${x(i).toFixed(1)},${wy(v).toFixed(1)}` : `H${x(i).toFixed(1)}V${wy(v).toFixed(1)}`;
+        lastX = x(i);
+      });
+      const wDots = wts
+        .map((v, i) =>
+          v == null
+            ? ""
+            : `<g><title>${programLabel(dash.programs[i])}: max ${fmtWeight(v)} ${dash.unit}</title><circle class="lc-wdot" cx="${x(i)}" cy="${wy(v)}" r="2.5" /></g>`
+        )
+        .join("");
+
+      // Value row: every value when there's room, otherwise thinned like the
+      // dates - but a change is always labelled.
+      const wStep = slot >= 30 ? 1 : Math.max(1, Math.ceil(30 / slot));
+      const lastW = lastValue(wts);
+      const wLabels = wts
         .map((v, i) => {
           if (v == null) return "";
-          const top = plotBot - (v / (wMax * 1.4)) * (plotBot - plotTop);
-          const isLast = lastB && i === lastB.index;
-          const label = bw >= 22 || showVals || isLast ? `<text class="lc-bar-val" x="${x(i)}" y="${plotBot + 13}">${fmtWeight(v)}</text>` : "";
-          return `<g><title>${programLabel(dash.programs[i])}: max ${fmtWeight(v)} ${dash.unit}</title>
-            <path class="lc-bar${isLast ? " lc-bar-last" : ""}" d="M${x(i) - bw / 2},${plotBot}V${top + 4}q0,-4 4,-4h${bw - 8}q4,0 4,4V${plotBot}Z" />${label}</g>`;
+          const show = showVals || change[i] !== 0 || (lastW && i === lastW.index) || (n - 1 - i) % wStep === 0;
+          if (!show) return "";
+          const cls = change[i] > 0 ? " up" : change[i] < 0 ? " down" : "";
+          const arrow = change[i] > 0 ? "▲" : change[i] < 0 ? "▼" : "";
+          return `<text class="lc-wval${cls}" x="${x(i)}" y="${stripBot + 13}">${arrow}${fmtWeight(v)}</text>`;
         })
         .join("");
+
+      strip = `<line class="lc-strip-base" x1="0" y1="${stripBot}" x2="${w}" y2="${stripBot}" />
+        <path class="lc-wline" d="${d}" />${wDots}${wLabels}`;
       legend = `<div class="lc-legend">
         <span><i class="lg-vol"></i>Volume (${dash.unit})</span>
-        <span><i class="lg-w"></i>Max weight (${dash.unit})</span>
+        <span><i class="lg-w"></i>Max weight (${dash.unit}), strip below</span>
+        <span><i class="lg-up"></i>Weight went up</span>
       </div>`;
     }
 
@@ -410,7 +465,7 @@
         if (v == null) return "";
         const isLast = last && i === last.index;
         const label = showVals || isLast ? `<text class="lc-val" x="${x(i)}" y="${labelY(y(v))}">${fmtVol(v)}</text>` : "";
-        const wt = barVals && barVals[i] != null ? ` · max ${fmtWeight(barVals[i])} ${dash.unit}` : "";
+        const wt = wts && wts[i] != null ? ` · max ${fmtWeight(wts[i])} ${dash.unit}` : "";
         return `<g><title>${programLabel(dash.programs[i])}: ${fmtVol(v)} ${dash.unit} volume${wt}</title>
           <circle class="lc-hit" cx="${x(i)}" cy="${y(v)}" r="14" />
           <circle class="lc-dot${isLast ? " lc-dot-last" : ""}" cx="${x(i)}" cy="${y(v)}" r="${isLast ? 4.5 : 3.5}" />${label}</g>`;
@@ -424,8 +479,8 @@
       .join("");
 
     return `${legend}<svg class="line-chart" data-key="${key}" width="${w}" height="${height}" viewBox="0 0 ${w} ${height}" role="img">
-      ${barLayer}<line class="lc-base" x1="0" y1="${plotBot}" x2="${w}" y2="${plotBot}" />
-      ${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
+      ${bands}<line class="lc-base" x1="0" y1="${plotBot}" x2="${w}" y2="${plotBot}" />
+      ${strip}${trend}<path class="lc-line" d="${path}" />${dots}${xLabels}
     </svg>`;
   }
 
@@ -564,7 +619,7 @@
             ${sparkline(ex.series)}
             ${retired ? `<span class="trend-pill flat">retired</span>` : trendPill(eg, "")}
           </button>
-          ${open ? `<div class="ex-row-chart">${lineChart({ series: ex.series, bars: ex.maxWeight, key: "ex:" + ex.groupId, height: 160 })}</div>` : ""}
+          ${open ? `<div class="ex-row-chart">${lineChart({ series: ex.series, weights: ex.maxWeight, key: "ex:" + ex.groupId, height: 196 })}</div>` : ""}
         </div>`;
       })
       .join("");
